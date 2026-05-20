@@ -1,0 +1,21 @@
+# Claude Code
+CLAUDE.md
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# macOS
+.DS_Store
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
