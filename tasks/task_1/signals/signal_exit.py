@@ -6,48 +6,45 @@ Three independent exit triggers, applied separately to long and short positions.
 Exit conditions:
 1. Trend exit      : price crosses the SMA50 in the wrong direction
 2. Bollinger exit  : price becomes overextended outside the 100-day band
-3. Volatility exit : ATR30 is both above its historical 80th percentile AND
-                     higher than it was 21 days ago (high and rising)
+3. ATR stop exit   : the bar return moves against the held side by more than
+                     multiplier × ATR%
 
-The volatility exit is symmetric — it applies to both long and short positions
-because a sharp volatility spike increases risk regardless of direction.
+The ATR stop is side-aware: long and short stop masks are computed separately,
+then the stateful position builder applies only the mask for the side held.
 """
 
 import pandas as pd
 
-from indicators import sma, atr_close_proxy, bollinger_bands, expanding_quantile
+from indicators import sma, atr_pct, bollinger_bands
 
 
-def _vol_exit(
+def atr_stop_exit_signal(
     prices: pd.DataFrame,
+    side: str,
     atr_window: int = 30,
-    lookback: int = 21,
-    fallback: float = 0.10,
+    multiplier: float = 1.0,
 ) -> pd.DataFrame:
     """
-    Volatility exit: True when ATR30 is historically elevated AND rising.
+    ATR-based stop exit: True when the position's daily return breaches the
+    ATR30 stop level.
 
-    Exits on the combination of two conditions:
-      (a) ATR30 > expanding P80 of ATR30  — unusually high relative to history
-      (b) ATR30 > ATR30_{t-21}            — still increasing over the past month
+    Long exit : return_t <= -(multiplier × ATR30%)
+    Short exit: return_t >=  (multiplier × ATR30%)
 
-    Requiring both conditions avoids exiting on a single vol spike that
-    immediately reverts. The expanding P80 threshold uses a 1-day shift
-    (inside expanding_quantile) to avoid look-ahead bias; fallback is used
-    before 252 days of history are available.
+    The stateful position builder applies the long/short stop only when that
+    side is actually held, avoiding a preliminary no-exit position dependency.
     """
-    atr30 = atr_close_proxy(prices, atr_window)
+    vol_threshold = atr_pct(prices, window=atr_window)
+    asset_ret = prices.pct_change()
 
-    atr30_p80 = expanding_quantile(
-        atr30,
-        q=0.80,
-        min_periods=252,
-    ).fillna(fallback)
+    if side == "long":
+        exit_signal = asset_ret <= -(multiplier * vol_threshold)
+    elif side == "short":
+        exit_signal = asset_ret >= multiplier * vol_threshold
+    else:
+        raise ValueError("side must be 'long' or 'short'")
 
-    above_p80 = atr30 > atr30_p80
-    rising    = atr30 > atr30.shift(lookback)
-
-    return (above_p80 & rising).fillna(False)
+    return exit_signal.fillna(False)
 
 
 def long_exit_signal(
@@ -55,13 +52,15 @@ def long_exit_signal(
     sma_window: int = 50,
     bb_window: int = 100,
     bb_std: float = 1.5,
+    atr_window: int = 30,
+    atr_multiplier: float = 1.0,
 ) -> pd.DataFrame:
     """
     Exit conditions for a long position. Exit if any of:
 
     1. Close < SMA50         — trend has reversed below the medium-term average
     2. Close > BB upper      — price has extended too far above the 100-day band
-    3. Vol exit fires        — volatility is high and still rising
+    3. ATR stop fires        — daily loss exceeds multiplier × ATR30%
 
     Returns
     -------
@@ -70,12 +69,12 @@ def long_exit_signal(
     """
     sma50 = sma(prices, sma_window)
     _, bb_upper, _ = bollinger_bands(prices, bb_window, bb_std)
-    vol_exit = _vol_exit(prices)
+    atr_stop = atr_stop_exit_signal(prices, "long", atr_window, atr_multiplier)
 
     below_sma50    = prices < sma50
     above_bb_upper = prices > bb_upper
 
-    return (below_sma50 | above_bb_upper | vol_exit).fillna(False)
+    return (below_sma50 | above_bb_upper | atr_stop).fillna(False)
 
 
 def short_exit_signal(
@@ -83,13 +82,15 @@ def short_exit_signal(
     sma_window: int = 50,
     bb_window: int = 100,
     bb_std: float = 1.5,
+    atr_window: int = 30,
+    atr_multiplier: float = 1.0,
 ) -> pd.DataFrame:
     """
     Exit conditions for a short position. Exit if any of:
 
     1. Close > SMA50         — trend has reversed above the medium-term average
     2. Close < BB lower      — price has extended too far below the 100-day band
-    3. Vol exit fires        — volatility is high and still rising
+    3. ATR stop fires        — daily loss exceeds multiplier × ATR30%
 
     Returns
     -------
@@ -98,9 +99,9 @@ def short_exit_signal(
     """
     sma50 = sma(prices, sma_window)
     _, _, bb_lower = bollinger_bands(prices, bb_window, bb_std)
-    vol_exit = _vol_exit(prices)
+    atr_stop = atr_stop_exit_signal(prices, "short", atr_window, atr_multiplier)
 
     above_sma50    = prices > sma50
     below_bb_lower = prices < bb_lower
 
-    return (above_sma50 | below_bb_lower | vol_exit).fillna(False)
+    return (above_sma50 | below_bb_lower | atr_stop).fillna(False)

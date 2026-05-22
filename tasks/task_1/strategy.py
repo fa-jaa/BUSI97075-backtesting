@@ -35,6 +35,7 @@ def build_signals(
     entry_s = (trend == -1) & (prev != -1)
 
     _no_exit = pd.DataFrame(False, index=prices.index, columns=prices.columns)
+
     ex_long  = exit_long_fn(prices)  if exit_long_fn  is not None else _no_exit
     ex_short = exit_short_fn(prices) if exit_short_fn is not None else _no_exit
 

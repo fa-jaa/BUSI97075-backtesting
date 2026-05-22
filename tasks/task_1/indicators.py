@@ -20,18 +20,21 @@ def ema(prices: pd.DataFrame, span: int) -> pd.DataFrame:
     """Exponential moving average with span-day half-life."""
     return prices.ewm(span=span, min_periods=span, adjust=False).mean()
 
-
-def atr_close_proxy(prices: pd.DataFrame, window: int) -> pd.DataFrame:
+def atr_pct(prices: pd.DataFrame, window: int = 30) -> pd.DataFrame:
     """
-    Close-to-close ATR proxy (rolling mean of absolute daily price change).
+    Close-to-close ATR proxy as a percentage of price.
 
-    Uses close-to-close differences instead of the full true range (which
-    requires high/low data). Returns raw price units, not a percentage.
-    Divide by prices to convert to a percentage if needed.
+    Calculates the rolling average absolute daily price change,
+    then converts it into percentage terms.
+
+    Example:
+    If price = 100 and average absolute move = 2,
+    atr_pct = 0.02, meaning 2%.
     """
-    tr  = (prices - prices.shift(1)).abs()
+    tr = (prices - prices.shift(1)).abs()
     atr = tr.rolling(window, min_periods=window).mean()
-    return atr
+
+    return atr / prices.shift(1)
 
 
 def bollinger_bands(
