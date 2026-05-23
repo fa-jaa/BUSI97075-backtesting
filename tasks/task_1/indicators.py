@@ -68,6 +68,24 @@ def sma_slope(prices: pd.DataFrame, window: int, lookback: int = 21) -> pd.DataF
     return ma - ma.shift(lookback)
 
 
+def rsi(prices: pd.DataFrame, window: int = 14) -> pd.DataFrame:
+    """
+    RSI using Wilder's smoothing (EMA with alpha = 1/window).
+
+    Returns values in [0, 100]. NaN for the first `window` periods.
+    No look-ahead: at time t uses only data up to and including t.
+    """
+    delta     = prices.diff()
+    gain      = delta.clip(lower=0)
+    loss      = (-delta).clip(lower=0)
+
+    avg_gain  = gain.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+    avg_loss  = loss.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
 def expanding_quantile(series: pd.DataFrame, q: float, min_periods: int = 252) -> pd.DataFrame:
     """
     Expanding-window quantile, shifted by 1 day to avoid look-ahead bias.
