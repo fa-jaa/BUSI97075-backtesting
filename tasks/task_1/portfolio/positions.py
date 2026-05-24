@@ -3,26 +3,34 @@ import pandas as pd
 
 
 def build_positions(
-    entry_long: pd.DataFrame,
-    entry_short: pd.DataFrame,
-    exit_long: pd.DataFrame,
-    exit_short: pd.DataFrame,
+    entry_signal: pd.DataFrame,
+    exit_signal:  pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Stateful position series.
 
-    For each asset at each date:
-    - Flat  → enter long if entry_long fires, enter short if entry_short fires
-    - Long  → exit to flat if exit_long fires, otherwise stay long
-    - Short → exit to flat if exit_short fires, otherwise stay short
+    Parameters
+    ----------
+    entry_signal : output of layer2_signal — values in {-1, 0, +1, NaN}
+                   +1 = enter long, -1 = enter short, 0/NaN = no entry
+    exit_signal  : output of layer3_signal — values in {-1, 0, +1}
+                   -1 = exit long (sell to close), +1 = exit short (buy to cover), 0 = no exit
 
-    Position at row t is determined from close-t data and represents the
-    desired holding going into t+1 (exec_lag in build_weights handles the shift).
+    Note: layer3_signal must be called with layer2_signal.shift(1) as its
+    entry_signal argument so that SAR is initialised at the correct execution price.
+
+    For each asset at each date:
+    - Flat  → enter long if entry_signal == +1, enter short if entry_signal == -1
+    - Long  → exit to flat if exit_signal == -1, otherwise stay long
+    - Short → exit to flat if exit_signal == +1, otherwise stay short
+
+    Position at row t represents the desired holding going into t+1.
+    The execution shift is handled downstream in build_weights.
     """
-    en_long  = entry_long.fillna(False).values.astype(bool)
-    en_short = entry_short.fillna(False).values.astype(bool)
-    ex_long  = exit_long.fillna(False).values.astype(bool)
-    ex_short = exit_short.fillna(False).values.astype(bool)
+    en_long  = (entry_signal ==  1).fillna(False).values.astype(bool)
+    en_short = (entry_signal == -1).fillna(False).values.astype(bool)
+    ex_long  = (exit_signal  == -1).fillna(False).values.astype(bool)
+    ex_short = (exit_signal  ==  1).fillna(False).values.astype(bool)
 
     n_dates, n_assets = en_long.shape
     pos_array = np.zeros((n_dates, n_assets), dtype=np.float32)
@@ -47,4 +55,4 @@ def build_positions(
 
             pos_array[i, j] = pos
 
-    return pd.DataFrame(pos_array, index=entry_long.index, columns=entry_long.columns)
+    return pd.DataFrame(pos_array, index=entry_signal.index, columns=entry_signal.columns)

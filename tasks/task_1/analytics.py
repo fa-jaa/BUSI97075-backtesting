@@ -30,10 +30,16 @@ def performance_stats(
     cum     = (1 + r).cumprod()
     mdd     = ((cum / cum.cummax()) - 1).min()
 
+    calmar   = ann_ret / abs(mdd)   if mdd < 0 else np.nan
+    down_vol = r[r < 0].std() * np.sqrt(252)
+    sortino  = ann_ret / down_vol   if down_vol > 0 else np.nan
+
     out = {
         'Ann. Return %' : round(ann_ret * 100, 2),
         'Ann. Vol %'    : round(ann_vol * 100, 2),
         'Sharpe'        : round(sharpe, 3),
+        'Sortino'       : round(sortino, 3),
+        'Calmar'        : round(calmar, 3),
         'Max DD %'      : round(mdd * 100, 2),
         'Skewness'      : round(r.skew(), 3),
         'Hit Rate'      : round((r > 0).mean(), 3),
@@ -121,16 +127,16 @@ def plot_signals(
     figsize   : (width, height) for each individual figure.
     """
     import matplotlib.pyplot as plt
-    from strategy import build_signals
+    from strategy_v2 import build_signals
 
     p = prices[commodity]
 
     for label, kwargs in configs.items():
-        entry_l, entry_s, _, _, positions = build_signals(prices, **kwargs)
-
+        signals   = build_signals(prices, **kwargs)
+        positions = signals['positions']
         pos = positions[commodity]
-        el  = entry_l[commodity]
-        es  = entry_s[commodity]
+        el  = (signals['layer2'][commodity] ==  1)
+        es  = (signals['layer2'][commodity] == -1)
 
         long_exited  = (pos == 0) & (pos.shift(1) == 1)
         short_exited = (pos == 0) & (pos.shift(1) == -1)
@@ -194,6 +200,65 @@ def plot_comparison(
     ax.set_yscale('log')
     ax.set_title('Cumulative Return — Strategy Comparison', fontweight='bold')
     ax.set_ylabel('Cumulative Return (log scale)')
+    ax.legend(fontsize=9)
+    ax.spines[['top', 'right']].set_visible(False)
+    fig.tight_layout()
+    plt.show()
+
+
+def rolling_sharpe(
+    returns: pd.Series,
+    window:  int = 252,
+) -> pd.Series:
+    """
+    Rolling annualised Sharpe ratio over a `window`-day window.
+
+    Used to assess the stability of the Sharpe over time — a strategy
+    with a high full-period Sharpe but a volatile rolling Sharpe is less
+    robust than one with a consistently positive rolling Sharpe.
+
+    Parameters
+    ----------
+    returns : daily portfolio returns
+    window  : rolling window in days (default 252 = 1 year)
+    """
+    roll    = returns.rolling(window)
+    mu      = roll.mean() * 252
+    sigma   = roll.std()  * np.sqrt(252)
+    return (mu / sigma).rename(f'Rolling Sharpe ({window}d)')
+
+
+def plot_rolling_sharpe(
+    results: dict,
+    window:  int   = 252,
+    figsize: tuple = (13, 5),
+) -> None:
+    """
+    Plot rolling Sharpe for one or more strategies to visualise robustness.
+
+    A stable strategy shows a rolling Sharpe that stays consistently above
+    zero. Dips below zero reveal periods of sustained underperformance.
+
+    Parameters
+    ----------
+    results : {label: daily_returns_series}
+    window  : rolling window in days (default 252 = 1 year)
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for label, port_r in results.items():
+        rs = rolling_sharpe(port_r.dropna(), window=window)
+        ax.plot(rs.index, rs.values, lw=1.5, label=label)
+
+    ax.axhline(0, color='black',  lw=0.8, linestyle='--')
+    ax.axhline(1, color='grey',   lw=0.6, linestyle=':')
+    ax.axhline(-1, color='grey',  lw=0.6, linestyle=':')
+
+    ax.set_title(f'Rolling Sharpe ({window}d) — Robustness Check',
+                 fontweight='bold')
+    ax.set_ylabel('Sharpe')
     ax.legend(fontsize=9)
     ax.spines[['top', 'right']].set_visible(False)
     fig.tight_layout()
