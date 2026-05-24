@@ -11,6 +11,10 @@ Neutral(0): conditions disagree
 NaN       : insufficient history for any indicator
 """
 
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 import pandas as pd
 from indicators import sma, sma_slope
 

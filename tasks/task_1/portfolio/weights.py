@@ -42,6 +42,10 @@ def build_weights(
 
     weights = weights.ffill().fillna(0.0)
 
+    # normalise: gross exposure = 1 at all times when any position is active
+    gross = weights.abs().sum(axis=1).replace(0, float('nan'))
+    weights = weights.div(gross, axis=0).fillna(0.0)
+
     return weights.shift(exec_lag)
 
 

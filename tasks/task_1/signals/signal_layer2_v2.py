@@ -31,6 +31,10 @@ Neutral(0): conditions not met
 NaN       : insufficient history for any indicator
 """
 
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 import pandas as pd
 from indicators import ema, rsi
 

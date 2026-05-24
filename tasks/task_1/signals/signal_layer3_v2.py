@@ -43,6 +43,10 @@ pd.DataFrame  — values in {-1, 0, +1}
      0  no exit
 """
 
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 import numpy as np
 import pandas as pd
 from indicators import atr_pct, bollinger_bands
@@ -51,9 +55,9 @@ from indicators import atr_pct, bollinger_bands
 def layer3_signal(
     prices:           pd.DataFrame,
     entry_signal:     pd.DataFrame,
-    bb_window:        int   = 200,
+    bb_window:        int   = 100,
     bb_num_std:       float = 2.0,
-    atr_window:       int   = 30,
+    atr_window:       int   = 20,
     sar_initial_mult: float = 2.5,
     sar_af_start:     float = 0.02,
     sar_af_step:      float = 0.02,

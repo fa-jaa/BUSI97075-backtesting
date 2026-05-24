@@ -95,14 +95,18 @@ def sector_contribution(
 
 
 def position_summary(positions: pd.DataFrame) -> pd.DataFrame:
-    """Days and percentage of time spent long, short, and flat per commodity."""
+    """Days and percentage of time spent long, short, and flat per commodity.
+
+    Works with both single-slot ({-1, 0, +1}) and multi-slot (integer counts)
+    position DataFrames.
+    """
     total = len(positions)
     return pd.DataFrame({
-        'Days Long'  : (positions == 1).sum(),
-        'Days Short' : (positions == -1).sum(),
+        'Days Long'  : (positions > 0).sum(),
+        'Days Short' : (positions < 0).sum(),
         'Days Flat'  : (positions == 0).sum(),
-        '% Long'     : ((positions == 1).sum()  / total * 100).round(1),
-        '% Short'    : ((positions == -1).sum() / total * 100).round(1),
+        '% Long'     : ((positions > 0).sum()  / total * 100).round(1),
+        '% Short'    : ((positions < 0).sum() / total * 100).round(1),
     })
 
 
@@ -122,28 +126,36 @@ def plot_signals(
     Parameters
     ----------
     prices    : daily close prices (dates × assets).
-    configs   : {label: kwargs} passed to build_signals, e.g. {'Trend': {}}.
+    configs   : {label: kwargs} passed to run_strategy, e.g. {'Trend': {}}.
     commodity : column name to plot, e.g. 'BRENT CRUDE'.
     figsize   : (width, height) for each individual figure.
     """
     import matplotlib.pyplot as plt
-    from strategy_v2 import build_signals
+    from strategy_v2 import build_signals, run_strategy
 
     p = prices[commodity]
 
     for label, kwargs in configs.items():
-        signals   = build_signals(prices, **kwargs)
-        positions = signals['positions']
+        # Layer 2 entry events for entry markers
+        sig_kwargs = {k: kwargs[k] for k in (
+            'filter_fast', 'filter_slow', 'slope_lookback',
+            'ema_window', 'rsi_window', 'rsi_level', 'rsi_flag_window',
+        ) if k in kwargs}
+        signals = build_signals(prices, **sig_kwargs)
+
+        # Full pipeline for positions (needed for shading and exit markers)
+        positions, _, _ = run_strategy(prices, **kwargs)
         pos = positions[commodity]
         el  = (signals['layer2'][commodity] ==  1)
         es  = (signals['layer2'][commodity] == -1)
 
-        long_exited  = (pos == 0) & (pos.shift(1) == 1)
-        short_exited = (pos == 0) & (pos.shift(1) == -1)
+        # Exit = last slot in an asset closes (position crosses zero from active)
+        long_exited  = (pos == 0) & (pos.shift(1) > 0)
+        short_exited = (pos == 0) & (pos.shift(1) < 0)
 
         for shade, entries, exits, colour, entry_marker, side, entry_label, exit_label in [
-            (pos == 1,  el, long_exited,  'green',     '^', 'Long',  'Long entry',  'Long exit'),
-            (pos == -1, es, short_exited, 'firebrick', 'v', 'Short', 'Short entry', 'Short exit'),
+            (pos > 0, el, long_exited,  'green',     '^', 'Long',  'Long entry',  'Long exit'),
+            (pos < 0, es, short_exited, 'firebrick', 'v', 'Short', 'Short entry', 'Short exit'),
         ]:
             fig, ax = plt.subplots(figsize=figsize)
             fig.suptitle(f'{commodity}  —  {label}  —  {side}',
