@@ -23,7 +23,7 @@ def layer1_signal(
     prices: pd.DataFrame,
     filter_fast:    int = 50,
     filter_slow:    int = 200,
-    slope_lookback: int = 10,
+    slope_lookback: int = 20,
 ) -> pd.DataFrame:
     """
     Layer 1 persistent regime signal.
