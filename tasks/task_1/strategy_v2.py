@@ -40,9 +40,10 @@ def build_signals(
     filter_slow:    int   = 200,
     slope_lookback: int   = 10,
     # Layer 2
-    ema_window:      int   = 20,
+    ema_window:      int   = 14,
     rsi_window:      int   = 14,
-    rsi_level:       float = 50.0,
+    rsi_long_level:  float = 50.0,
+    rsi_level:       float = 60.0,
     rsi_flag_window: int   = 5,
 ) -> dict[str, pd.DataFrame]:
     """
@@ -66,6 +67,7 @@ def build_signals(
         layer1          = l1,
         ema_window      = ema_window,
         rsi_window      = rsi_window,
+        rsi_long_level  = rsi_long_level,
         rsi_level       = rsi_level,
         rsi_flag_window = rsi_flag_window,
     )
@@ -82,9 +84,10 @@ def run_strategy(
     filter_slow:    int   = 200,
     slope_lookback: int   = 10,
     # Layer 2
-    ema_window:      int   = 20,
+    ema_window:      int   = 14,
     rsi_window:      int   = 14,
-    rsi_level:       float = 50.0,
+    rsi_long_level:  float = 50.0,
+    rsi_level:       float = 60.0,
     rsi_flag_window: int   = 5,
     # Slot manager — exit conditions
     bb_window:        int   = 100,
@@ -129,6 +132,7 @@ def run_strategy(
         slope_lookback  = slope_lookback,
         ema_window      = ema_window,
         rsi_window      = rsi_window,
+        rsi_long_level  = rsi_long_level,
         rsi_level       = rsi_level,
         rsi_flag_window = rsi_flag_window,
     )

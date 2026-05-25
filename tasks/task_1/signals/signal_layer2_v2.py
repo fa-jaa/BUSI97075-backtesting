@@ -9,23 +9,28 @@ Signal is generated at close of day t (conditions observed at t).
 Execution happens at close of day t+1 — the backtester shifts by 1,
 NO shift is applied here.
 
-Long  (+1): layer1 == +1  AND  price crosses above EMA20 at t
+Long  (+1): layer1 == +1  AND  price crosses above EMA at t
+                           AND  RSI flag crosses above rsi_long_level (symmetric filter)
 
-Short (-1): layer1 == -1  AND  price crosses below EMA20 at t
-                           AND  RSI flag is active at t
+Short (-1): layer1 == -1  AND  price crosses below EMA at t
+                           AND  RSI flag crosses below rsi_level
 
-RSI flag (short only)
----------------------
-The RSI flag fires when RSI crosses below `rsi_level` (e.g. 50).
-It then stays active for `rsi_flag_window` days via a rolling max.
-This allows the RSI break to occur 1–N days BEFORE the EMA cross
-and still trigger the entry when the EMA cross arrives.
+RSI flag — symmetric for both directions
+-----------------------------------------
+Long  flag: RSI crosses ABOVE rsi_long_level → stays active rsi_flag_window days
+Short flag: RSI crosses BELOW rsi_level      → stays active rsi_flag_window days
 
-    rsi_break[t] = 1  if RSI[t-1] >= rsi_level AND RSI[t] < rsi_level
-    rsi_flag[t]  = 1  if any rsi_break in [t-rsi_flag_window+1 … t] == 1
+This filters out EMA crosses that happen without RSI momentum confirmation,
+reducing false signals on both legs.
 
-EMA cross (long):  close[t-1] <= EMA20[t-1]  AND  close[t] > EMA20[t]
-EMA cross (short): close[t-1] >= EMA20[t-1]  AND  close[t] < EMA20[t]
+    rsi_break_long[t]  = 1  if RSI[t-1] <= rsi_long_level AND RSI[t] > rsi_long_level
+    rsi_flag_long[t]   = 1  if any rsi_break_long in [t-rsi_flag_window+1 … t] == 1
+
+    rsi_break_short[t] = 1  if RSI[t-1] >= rsi_level AND RSI[t] < rsi_level
+    rsi_flag_short[t]  = 1  if any rsi_break_short in [t-rsi_flag_window+1 … t] == 1
+
+EMA cross (long):  close[t-1] <= EMA[t-1]  AND  close[t] > EMA[t]
+EMA cross (short): close[t-1] >= EMA[t-1]  AND  close[t] < EMA[t]
 
 Neutral(0): conditions not met
 NaN       : insufficient history for any indicator
@@ -40,12 +45,13 @@ from indicators import ema, rsi
 
 
 def layer2_signal(
-    prices:          pd.DataFrame,
-    layer1:          pd.DataFrame,
-    ema_window:      int   = 20,
-    rsi_window:      int   = 14,
-    rsi_level:       float = 50.0,
-    rsi_flag_window: int   = 5,
+    prices:           pd.DataFrame,
+    layer1:           pd.DataFrame,
+    ema_window:       int   = 14,
+    rsi_window:       int   = 14,
+    rsi_long_level:   float = 50.0,   # RSI must cross ABOVE this to confirm long
+    rsi_level:        float = 60.0,   # RSI must cross BELOW this to confirm short
+    rsi_flag_window:  int   = 5,
 ) -> pd.DataFrame:
     """
     Layer 2 entry timing signal.
@@ -56,7 +62,8 @@ def layer2_signal(
     layer1          : output of layer1_signal — values in {-1, 0, +1, NaN}
     ema_window      : EMA period for price crossover
     rsi_window      : RSI lookback period
-    rsi_level       : RSI level to break (default 50)
+    rsi_long_level  : RSI must cross above this to confirm long entry (filters weak bounces)
+    rsi_level       : RSI must cross below this to confirm short entry
     rsi_flag_window : how many days the RSI flag stays active after the break
 
     Returns
@@ -72,16 +79,19 @@ def layer2_signal(
     cross_up   = (prices > e)  & (p_prev <= e_prev)
     cross_down = (prices < e)  & (p_prev >= e_prev)
 
-    rsi_vals  = rsi(prices, rsi_window)
-    rsi_prev  = rsi_vals.shift(1)
+    rsi_vals = rsi(prices, rsi_window)
+    rsi_prev = rsi_vals.shift(1)
 
-    # fires 1 only on the day RSI crosses below rsi_level
-    rsi_break = ((rsi_vals < rsi_level) & (rsi_prev >= rsi_level)).astype(float)
-    # stays 1 for rsi_flag_window days after the break
-    rsi_flag  = rsi_break.rolling(rsi_flag_window, min_periods=1).max()
+    # Long RSI flag: RSI crosses ABOVE rsi_long_level → stays active rsi_flag_window days
+    rsi_break_long = ((rsi_vals > rsi_long_level) & (rsi_prev <= rsi_long_level)).astype(float)
+    rsi_flag_long  = rsi_break_long.rolling(rsi_flag_window, min_periods=1).max()
 
-    long_ok  = (layer1 == 1)  & cross_up
-    short_ok = (layer1 == -1) & cross_down & (rsi_flag == 1)
+    # Short RSI flag: RSI crosses BELOW rsi_level → stays active rsi_flag_window days
+    rsi_break_short = ((rsi_vals < rsi_level) & (rsi_prev >= rsi_level)).astype(float)
+    rsi_flag_short  = rsi_break_short.rolling(rsi_flag_window, min_periods=1).max()
+
+    long_ok  = (layer1 == 1)  & cross_up   & (rsi_flag_long  == 1)
+    short_ok = (layer1 == -1) & cross_down & (rsi_flag_short == 1)
 
     signal = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
     signal[long_ok]  =  1.0

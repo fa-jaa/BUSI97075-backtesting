@@ -1,7 +1,7 @@
 import pandas as pd
 
-from portfolio.positions  import build_positions
-from portfolio.weights    import build_weights, compute_portfolio_returns
+from tasks.task_1.portfolio.positions_old  import build_positions
+from tasks.task_1.portfolio.weights_old    import build_weights, compute_portfolio_returns
 from signals.signal_layer1 import layer1_signal
 from signals.signal_exit   import long_exit_signal, short_exit_signal
 
