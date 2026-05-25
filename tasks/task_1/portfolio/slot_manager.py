@@ -1,42 +1,53 @@
 """
-Slot Manager — Concurrent Position Tracker
-===========================================
-
-Replaces the Layer 3 + build_positions + build_weights pipeline with a single
-stateful loop that supports multiple concurrent positions per asset.
+Slot Manager — Concurrent Position Tracker (Bottom-Up Sizing)
+==============================================================
 
 Each EMA cross (Layer 2 entry event) opens a NEW independent slot with its own
-Parabolic SAR anchored at the execution price. Multiple concurrent slots per
-asset (and per direction) are fully supported — if 3 EMA crosses occur within
-one regime block, 3 slots run simultaneously, each with its own SAR.
+Parabolic SAR. Multiple concurrent slots per asset are fully supported.
+
+Position sizing — bottom-up (fixed risk per slot)
+--------------------------------------------------
+  stop_distance_pct = sar_initial_mult × ATR_pct[t]   (= initial SAR gap / price)
+  size              = min(risk_per_slot / stop_distance_pct, max_slot_size)
+  weight_slot       = direction × size
+
+  max_slot_size (default 20%) caps individual slots — prevents a tiny ATR from
+  inflating a single slot to an unrealistic size.
+
+  Example: ATR_pct = 2%, sar_initial_mult = 2.5
+           stop_distance = 5%,  size = 1% / 5% = 20%  (at the cap)
+
+Gross leverage cap
+------------------
+  gross_leverage = Σ |weight_slot|  across all active slots and all assets
+  If gross_leverage ≥ leverage_cap (default 250%) → new slots are blocked.
+  Existing slots are NOT force-closed; the cap only prevents new openings.
+
+  The cap check happens AFTER all exits are processed for the current bar
+  and BEFORE any new entries — this requires a time-first loop (all assets
+  processed per day) rather than an asset-first loop.
+
+Per-asset slot limit
+--------------------
+  max_slots_per_asset (default 2) caps concurrent slots on the same commodity.
+  A third EMA cross on Brent Crude while 2 slots are already open is skipped.
+
+Weights
+-------
+  weight_asset[t] = Σ weight_slot for all active slots of that asset
+  No daily renormalisation — weights are fixed at entry and do not change
+  until the slot closes. This avoids the implicit daily portfolio rebalancing
+  of the vol-parity approach.
+
+  Final weights are shifted by exec_lag (default 1 day).
 
 Slot lifecycle
 --------------
-  Open  : Layer 2 entry event fires at t  →  slot opens at close of t+1 (exec bar)
-           (entry_exec = entry_signal.shift(1))
+  Open  : Layer 2 entry event at t-1  →  slot opens at close of t (exec bar)
   Close : earliest of
             · Long:  price < SAR  OR  price > Upper BB(bb_window, bb_num_std)
             · Short: price > SAR
-            · Layer 1 regime ends (l1 transitions away from the slot direction)
-
-Parabolic SAR update (identical to Layer 3 convention)
--------------------------------------------------------
-  SAR[t]  = SAR[t-1] + AF * (EP[t-1] - SAR[t-1])
-  EP updated after SAR, so today's new extreme feeds SAR[t+1].
-  Long  SAR rises  (EP = running max since entry; initial SAR < entry price)
-  Short SAR falls  (EP = running min since entry; initial SAR > entry price)
-
-Vol-parity weighting
---------------------
-  w_slot = direction / EWMA_vol(at entry)   locked at opening bar
-  weight_asset[t] = Σ w_slot for all active slots in that asset
-  Normalised: Σ |weight_asset| = 1 whenever any slot is active.
-  Final weights are shifted by exec_lag (default 1).
-
-Look-ahead convention
----------------------
-  Layer 2 signal at t  →  slot opens at t+1  →  first P&L at t+2
-  (entry_exec = entry_signal.shift(1); weights = weights.shift(exec_lag))
+            · Layer 1 regime ends (l1 changes away from slot direction)
 """
 
 import sys
@@ -60,143 +71,161 @@ def build_slot_positions(
     sar_af_start:     float = 0.02,
     sar_af_step:      float = 0.02,
     sar_af_max:       float = 0.20,
-    vol_window:       int   = 30,
-    exec_lag:         int   = 1,
+    sar_grace_period: int   = 10,       # bars before AF is allowed to increase
+    risk_per_slot:      float = 0.01,   # fraction of capital risked per slot (1%)
+    max_slot_size:      float = 0.20,   # max weight per single slot (20%) — low-ATR cap
+    leverage_cap:       float = 2.50,   # max gross leverage — blocks new slots above this
+    max_slots_per_asset: int  = 2,      # max concurrent slots per commodity
+    exec_lag:           int   = 1,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """
-    Stateful multi-slot position builder.
-
-    Each EMA cross in Layer 2 opens a new concurrent slot per asset.
-    Slots close independently on SAR/BB hit or regime end.
+    Stateful multi-slot position builder with bottom-up sizing.
 
     Parameters
     ----------
-    prices        : close prices (dates × assets)
-    returns       : daily returns (dates × assets)
-    entry_signal  : Layer 2 output — entry events in {-1, 0, +1, NaN}
-    layer1        : Layer 1 output — regime in {-1, 0, +1, NaN}
+    prices               : close prices (dates × assets)
+    returns              : daily returns (dates × assets)
+    entry_signal         : Layer 2 output — entry events in {-1, 0, +1, NaN}
+    layer1               : Layer 1 output — regime in {-1, 0, +1, NaN}
+    risk_per_slot        : fraction of capital risked per slot (default 0.01 = 1%)
+    max_slot_size        : hard cap on individual slot weight (default 0.20 = 20%)
+    leverage_cap         : gross leverage cap; new slots blocked when reached (default 2.5 = 250%)
+    max_slots_per_asset  : max concurrent open slots per commodity (default 2)
 
     Returns
     -------
-    positions         : DataFrame of integer slot counts per asset
-                        (+N = N active long slots, -N = N active short slots)
-    weights           : vol-parity weights, normalised to gross = 1,
-                        shifted by exec_lag
+    positions         : DataFrame of integer slot counts (+N long, -N short)
+    weights           : bottom-up weights (not normalised), shifted by exec_lag
     portfolio_returns : daily portfolio returns (Series)
     """
     _, upper_bb, _ = bollinger_bands(prices, bb_window, bb_num_std)
     atr_df         = _atr_pct_fn(prices, atr_window)
 
-    ewma_vol = returns.ewm(span=vol_window, min_periods=vol_window // 2).std()
-    ewma_vol = ewma_vol.replace(0, float('nan'))
-
-    # Slot opens at execution bar: signal at t-1  →  slot at t
+    # Slot opens at execution bar: Layer 2 signal at t-1 → slot at t
     entry_exec = entry_signal.shift(1)
 
-    positions   = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-    weights_raw = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    cols = list(prices.columns)
+    n    = len(prices)
 
-    for col in prices.columns:
-        p     = prices[col].values
-        l1    = layer1[col].values     if col in layer1.columns     else np.full(len(p), np.nan)
-        entry = entry_exec[col].values
-        ub    = upper_bb[col].values   if col in upper_bb.columns   else np.full(len(p), np.nan)
-        atr   = atr_df[col].values     if col in atr_df.columns     else np.full(len(p), np.nan)
-        vol   = ewma_vol[col].values   if col in ewma_vol.columns   else np.full(len(p), np.nan)
+    # Pre-extract numpy arrays for inner-loop speed
+    p_arr     = {c: prices[c].values      for c in cols}
+    l1_arr    = {c: layer1[c].values      if c in layer1.columns      else np.full(n, np.nan) for c in cols}
+    entry_arr = {c: entry_exec[c].values  for c in cols}
+    ub_arr    = {c: upper_bb[c].values    if c in upper_bb.columns    else np.full(n, np.nan) for c in cols}
+    atr_arr   = {c: atr_df[c].values      if c in atr_df.columns      else np.full(n, np.nan) for c in cols}
 
-        pos_arr = np.zeros(len(p))
-        wgt_arr = np.zeros(len(p))
+    pos_out = {c: np.zeros(n) for c in cols}
+    wgt_out = {c: np.zeros(n) for c in cols}
 
-        # active_slots: list of {dir, sar, af, ep, w}
-        # dir : +1 (long) or -1 (short)
-        # sar : current SAR level
-        # af  : current acceleration factor
-        # ep  : extreme point since entry
-        # w   : vol-parity weight locked at entry (direction / ewma_vol)
-        active_slots: list[dict] = []
+    # active_slots[col]: list of {dir, sar, af, ep, w}
+    active_slots: dict[str, list[dict]] = {c: [] for c in cols}
 
-        for t in range(len(p)):
-            price_t = p[t]
-            l1_t    = l1[t]
+    for t in range(n):
 
+        # ── Phase 1: exits for all assets ─────────────────────────────────────
+        # (regime close + SAR/BB exits — must happen before the leverage check)
+        for col in cols:
+            price_t = p_arr[col][t]
             if np.isnan(price_t):
                 continue
 
-            # ── 1. Regime-end forced close ─────────────────────────────────
-            # Keep long slots only while l1 == +1; short slots only while l1 == -1.
-            # If l1 == 0 or flips, all slots of the wrong direction are closed.
+            l1_t = l1_arr[col][t]
+
+            # Force-close slots whose direction no longer matches the regime
             if not np.isnan(l1_t):
-                active_slots = [
-                    s for s in active_slots
+                active_slots[col] = [
+                    s for s in active_slots[col]
                     if (s['dir'] == 1 and l1_t == 1)
                     or (s['dir'] == -1 and l1_t == -1)
                 ]
 
-            # ── 2. Update SAR + check exits ────────────────────────────────
-            # SAR updated first (using yesterday's EP), then EP updated from
-            # today's price — same order as the standalone Layer 3 loop.
+            # Update SAR then check exits
             surviving: list[dict] = []
-            for s in active_slots:
-                # Update SAR using old EP
+            for s in active_slots[col]:
+                s['age'] += 1
+                # SAR update uses yesterday's EP (same order as Layer 3)
                 s['sar'] = s['sar'] + s['af'] * (s['ep'] - s['sar'])
 
                 if s['dir'] == 1:   # long slot
                     if price_t > s['ep']:
                         s['ep'] = price_t
-                        s['af'] = min(s['af'] + sar_af_step, sar_af_max)
-                    bb_exit  = (not np.isnan(ub[t])) and (price_t > ub[t])
+                        if s['age'] > sar_grace_period:
+                            s['af'] = min(s['af'] + sar_af_step, sar_af_max)
+                    bb_exit  = (not np.isnan(ub_arr[col][t])) and (price_t > ub_arr[col][t])
                     sar_exit = price_t < s['sar']
                     if not (bb_exit or sar_exit):
                         surviving.append(s)
                 else:               # short slot
                     if price_t < s['ep']:
                         s['ep'] = price_t
-                        s['af'] = min(s['af'] + sar_af_step, sar_af_max)
+                        if s['age'] > sar_grace_period:
+                            s['af'] = min(s['af'] + sar_af_step, sar_af_max)
                     sar_exit = price_t > s['sar']
                     if not sar_exit:
                         surviving.append(s)
 
-            active_slots = surviving
+            active_slots[col] = surviving
 
-            # ── 3. Open new slot on entry event ───────────────────────────
-            entry_t = entry[t]
-            if (
-                not np.isnan(entry_t)
-                and entry_t != 0
-                and not np.isnan(atr[t])
-                and not np.isnan(vol[t])
-                and not np.isnan(l1_t)
-                and l1_t == entry_t          # regime must still match direction
-            ):
-                direction = int(entry_t)
-                atr_val   = atr[t] if not np.isnan(atr[t]) else 0.02
+        # ── Phase 2: gross leverage after exits ───────────────────────────────
+        current_gross = sum(
+            abs(s['w']) for slots in active_slots.values() for s in slots
+        )
 
-                if direction == 1:
-                    sar_init = price_t * (1.0 - sar_initial_mult * atr_val)
-                else:
-                    sar_init = price_t * (1.0 + sar_initial_mult * atr_val)
+        # ── Phase 3: open new slots (blocked if cap reached) ──────────────────
+        for col in cols:
+            price_t = p_arr[col][t]
+            if np.isnan(price_t):
+                continue
 
-                active_slots.append({
-                    'dir': direction,
-                    'sar': sar_init,
-                    'af':  sar_af_start,
-                    'ep':  price_t,
-                    'w':   direction / vol[t],  # vol-parity weight, locked at entry
-                })
+            entry_t = entry_arr[col][t]
+            if np.isnan(entry_t) or entry_t == 0:
+                continue
 
-            # ── 4. Aggregate ───────────────────────────────────────────────
-            pos_arr[t] = float(sum(s['dir'] for s in active_slots))
-            wgt_arr[t] = sum(s['w'] for s in active_slots)
+            atr_t = atr_arr[col][t]
+            l1_t  = l1_arr[col][t]
 
-        positions[col]   = pos_arr
-        weights_raw[col] = wgt_arr
+            if np.isnan(atr_t) or np.isnan(l1_t) or l1_t != entry_t:
+                continue
 
-    # Normalise: gross exposure = 1 whenever any slot is active
-    gross   = weights_raw.abs().sum(axis=1).replace(0, float('nan'))
-    weights = weights_raw.div(gross, axis=0).fillna(0.0)
+            if len(active_slots[col]) >= max_slots_per_asset:
+                continue    # per-asset slot limit reached
 
-    # Execution lag: weight used at t was computed from signal at t-1
-    weights = weights.shift(exec_lag)
+            if current_gross >= leverage_cap:
+                continue    # gross leverage cap reached — block new slot
+
+            direction  = int(entry_t)
+            stop_dist  = sar_initial_mult * atr_t
+            if stop_dist < 1e-6:
+                continue    # degenerate ATR — skip
+
+            size        = min(risk_per_slot / stop_dist, max_slot_size)
+            slot_weight = direction * size
+
+            if direction == 1:
+                sar_init = price_t * (1.0 - sar_initial_mult * atr_t)
+            else:
+                sar_init = price_t * (1.0 + sar_initial_mult * atr_t)
+
+            active_slots[col].append({
+                'dir': direction,
+                'sar': sar_init,
+                'af':  sar_af_start,
+                'ep':  price_t,
+                'w':   slot_weight,     # locked at entry — never changes
+                'age': 0,              # bars alive; AF frozen until > sar_grace_period
+            })
+            current_gross += abs(slot_weight)   # update running total for this bar
+
+        # ── Phase 4: aggregate positions and weights ───────────────────────────
+        for col in cols:
+            pos_out[col][t] = float(sum(s['dir'] for s in active_slots[col]))
+            wgt_out[col][t] = sum(s['w'] for s in active_slots[col])
+
+    positions   = pd.DataFrame(pos_out, index=prices.index)
+    weights_raw = pd.DataFrame(wgt_out, index=prices.index)
+
+    # No normalisation — weights are the actual bottom-up sizes
+    weights = weights_raw.shift(exec_lag)
 
     portfolio_returns = (weights * returns).sum(axis=1, min_count=1).fillna(0.0)
 

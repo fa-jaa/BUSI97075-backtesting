@@ -22,19 +22,13 @@ def ema(prices: pd.DataFrame, span: int) -> pd.DataFrame:
 
 def atr_pct(prices: pd.DataFrame, window: int = 30) -> pd.DataFrame:
     """
-    Close-to-close ATR proxy as a percentage of price.
+    Close-to-close ATR proxy: rolling mean of absolute daily returns.
 
-    Calculates the rolling average absolute daily price change,
-    then converts it into percentage terms.
-
-    Example:
-    If price = 100 and average absolute move = 2,
-    atr_pct = 0.02, meaning 2%.
+    Each day's contribution is |r_t| = |price_t / price_{t-1} - 1|,
+    so the denominator is always the correct per-observation lagged price
+    rather than a pooled average divided by the current price.
     """
-    tr = (prices - prices.shift(1)).abs()
-    atr = tr.rolling(window, min_periods=window).mean()
-
-    return atr / prices.shift(1)
+    return prices.pct_change().abs().rolling(window, min_periods=window).mean()
 
 
 def bollinger_bands(
