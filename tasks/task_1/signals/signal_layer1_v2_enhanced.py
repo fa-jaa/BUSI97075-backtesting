@@ -1,14 +1,17 @@
 """
-Layer 1 — Trend Screen (v2)
+Layer 1 — Trend Screen (Enhanced)
+===================================
 
-Both conditions must agree for a signal to be active.
-The signal is persistent: it stays +1/-1 every day the conditions hold,
+Identical to signal_layer1_v2. Reserved for future enhancements.
+
+Current logic (unchanged):
+  Long  (+1): SMA50 > SMA200  AND  slope of SMA200 > 0 (over lookback days)
+  Short (-1): SMA50 < SMA200  AND  slope of SMA200 < 0 (over lookback days)
+  Neutral(0): conditions disagree
+  NaN       : insufficient history for any indicator
+
+The signal is persistent: stays +1/-1 every day the conditions hold,
 not just on the day of a crossover.
-
-Long  (+1): SMA50 > SMA200  AND  slope of SMA200 > 0 (over 10 days)
-Short (-1): SMA50 < SMA200  AND  slope of SMA200 < 0 (over 10 days)
-Neutral(0): conditions disagree
-NaN       : insufficient history for any indicator
 """
 
 import sys
