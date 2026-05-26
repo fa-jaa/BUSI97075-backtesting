@@ -41,7 +41,7 @@ import pandas as pd
 from signals.signal_layer1_v2_enhanced  import layer1_signal
 from signals.signal_layer2_v2_enhanced  import layer2_signal
 from portfolio.slot_manager_enhanced    import build_positions
-from portfolio.portfolio_manager        import build_portfolio
+from portfolio.portfolio_manager_enhanced import build_portfolio
 
 
 def build_signals(
