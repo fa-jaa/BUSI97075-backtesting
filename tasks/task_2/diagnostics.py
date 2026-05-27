@@ -4,8 +4,8 @@ Task 2 Training Diagnostics
 
 This module contains research diagnostics for the enhanced strategy. It does not
 define trading rules. The helpers rerun the Task 2 strategy on supplied training
-prices/returns to inspect transaction-cost sensitivity and Parabolic SAR
-parameter robustness.
+prices/returns to inspect transaction-cost sensitivity, portfolio sizing
+sensitivity, and Parabolic SAR parameter robustness.
 
 Main inputs are training close prices, training asset returns, optional strategy
 kwargs, and the predefined SAR grid. Main outputs are pandas DataFrames with
@@ -30,6 +30,10 @@ DEFAULT_SAR_GRID = {
     'sar_af_step': [0.01, 0.02, 0.03],
     'sar_af_max': [0.10, 0.15, 0.20, 0.25],
     'sar_grace_period': [5, 10, 15],
+}
+
+DEFAULT_SL_MULT_GRID = {
+    'sl_mult': [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
 }
 
 
@@ -128,6 +132,71 @@ def transaction_cost_sensitivity(
         rows.append(row)
 
     return pd.DataFrame(rows).set_index('cost_bps').sort_index()
+
+
+def sl_mult_grid_search(
+    prices: pd.DataFrame,
+    returns: pd.DataFrame,
+    strategy_kwargs: dict | None = None,
+    sl_mult_grid: dict | None = None,
+    tx_cost_bps: float = 2.0,
+) -> pd.DataFrame:
+    """
+    Grid search the portfolio sizing stop-distance assumption on training data.
+
+    This is a training-only sizing diagnostic, not trading logic. It keeps the
+    signal stack and SAR exit parameters fixed, then reruns the enhanced
+    strategy across `sl_mult` values. Candidates are sorted by a basic
+    robustness filter first, then net Sharpe.
+    """
+    strategy_kwargs = dict(strategy_kwargs or {})
+    sl_mult_grid = dict(sl_mult_grid or DEFAULT_SL_MULT_GRID)
+
+    baseline_positions, baseline_weights, baseline_returns = run_strategy(
+        prices,
+        returns=returns,
+        tx_cost_bps=tx_cost_bps,
+        **strategy_kwargs,
+    )
+    baseline = summarize_run(
+        baseline_positions,
+        baseline_weights,
+        baseline_returns,
+        asset_returns=returns,
+    )
+    min_entries = baseline['entries'] * 0.70
+    min_drawdown = baseline['max_drawdown'] - 0.05
+
+    keys = list(sl_mult_grid)
+    rows = []
+
+    for values in product(*(sl_mult_grid[key] for key in keys)):
+        sizing_params = dict(zip(keys, values))
+        kwargs = {**strategy_kwargs, **sizing_params}
+        positions, weights, port_returns = run_strategy(
+            prices,
+            returns=returns,
+            tx_cost_bps=tx_cost_bps,
+            **kwargs,
+        )
+        row = summarize_run(positions, weights, port_returns, asset_returns=returns)
+        row.update(sizing_params)
+        row['passes_basic_filter'] = (
+            row['entries'] >= min_entries
+            and row['max_drawdown'] >= min_drawdown
+        )
+        row['baseline_sharpe_net'] = baseline['sharpe_net']
+        row['baseline_max_drawdown'] = baseline['max_drawdown']
+        row['baseline_entries'] = baseline['entries']
+        row['baseline_ann_turnover'] = baseline['ann_turnover']
+        row['baseline_ann_cost'] = baseline.get('ann_cost', np.nan)
+        rows.append(row)
+
+    result = pd.DataFrame(rows)
+    return result.sort_values(
+        ['passes_basic_filter', 'sharpe_net', 'max_drawdown'],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
 
 
 def sar_grid_search(
