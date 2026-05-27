@@ -1,31 +1,23 @@
 """
-Slot Manager — Per-Commodity Position Builder
-==============================================
+Task 1 Slot Manager — Per-Commodity Positions
+=============================================
 
-Tracks a single long or short position per commodity.
-Receives the pre-computed L1 (regime) and L2 (entry) signal grids and
-returns a positions DataFrame {-1, 0, +1}.
+This module converts Layer 1 and Layer 2 signal grids into a positions DataFrame
+with values in {-1, 0, +1}. It tracks one active long or short per commodity.
+Sizing, weights, leverage, and returns are handled later by portfolio_manager.
 
-No position sizing, no weights, no risk budget — that lives in portfolio_manager.
+Entry rules
+-----------
+Flat position, shifted Layer 2 entry signal, and matching Layer 1 regime on the
+execution bar. New signals are suppressed while a position is already open.
 
-Entry
------
-  · Flat position AND L2 fires an event (signal at t → execution at t+1)
-  · L1 regime at execution bar must match L2 direction
-  · New signals are suppressed while a position is already open (no clustering)
+Exit rules
+----------
+The first of: fixed ATR stop, Bollinger Band profit exit, or regime mismatch.
 
-Exit — earliest of
-------------------
-  · Long:  price < Stop Loss  OR  price > Upper BB(bb_window, bb_num_std)
-  · Short: price > Stop Loss  OR  price < Lower BB(bb_window, bb_num_std)
-  · L1 regime ends (regime no longer matches position direction)
-
-Stop Loss
----------
-  SL is fixed at entry:
-    Long:  sl = entry_price × (1 − sl_mult × ATR_pct)
-    Short: sl = entry_price × (1 + sl_mult × ATR_pct)
-  sl_mult defaults to 3.0 (3 × ATR distance from entry price).
+No-lookahead: Layer 2 signals are shifted by one bar before entry. The loop then
+uses only current and past values as it walks forward through time.
+Pipeline role: Layer 2 entries -> positions -> portfolio manager.
 """
 
 import sys
@@ -66,7 +58,7 @@ def build_positions(
     _, upper_bb, lower_bb = bollinger_bands(prices, bb_window, bb_num_std)
     atr_df = _atr_pct_fn(prices, atr_window)
 
-    # No look-ahead: signal at t → entry executes at t+1
+    # No look-ahead: signal at t -> entry executes at t+1.
     entry_exec = layer2.shift(1)
 
     cols = list(prices.columns)
@@ -84,7 +76,7 @@ def build_positions(
     # Per-commodity state: None = flat, dict = {'dir', 'sl'} = open position
     active: dict[str, dict | None] = {c: None for c in cols}
 
-    for t in range(n):  # temporal loop function, for each t in time series, read all teh commodities
+    for t in range(n):
 
         # ── Phase 1: exits ─────────────────────────────────────────────────────
         for col in cols:
@@ -125,7 +117,7 @@ def build_positions(
             if np.isnan(price_t):
                 continue
 
-            entry_t = entry_arr[col][t]   # shift already applied, no look ahead bias
+            entry_t = entry_arr[col][t]   # Shift already applied.
             if np.isnan(entry_t) or entry_t == 0:
                 continue
 

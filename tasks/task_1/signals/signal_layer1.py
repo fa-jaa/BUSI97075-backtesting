@@ -1,14 +1,22 @@
 """
-Layer 1 — Trend Screen (v2)
+Task 1 Layer 1 — Trend Regime Screen
+====================================
 
-Both conditions must agree for a signal to be active.
-The signal is persistent: it stays +1/-1 every day the conditions hold,
-not just on the day of a crossover.
+This module creates the baseline persistent regime grid used by the Task 1
+strategy. It consumes close prices and returns a DataFrame with values in
+{-1, 0, +1, NaN}.
 
-Long  (+1): SMA50 > SMA200  AND  slope of SMA200 > 0 (over 100 days)
-Short (-1): SMA50 < SMA200  AND  slope of SMA200 < 0 (over 100 days)
-Neutral(0): conditions disagree
-NaN       : insufficient history for any indicator
+Both the moving-average crossover and slow-SMA slope must agree for a regime to
+be active. The signal is persistent: it stays +1 or -1 every day the conditions
+hold, not only on the crossover day.
+
+Long  (+1): SMA_fast > SMA_slow and SMA_slow slope > 0.
+Short (-1): SMA_fast < SMA_slow and SMA_slow slope < 0.
+Neutral(0): conditions disagree.
+NaN       : insufficient indicator history.
+
+No-lookahead: each row uses prices observed up to that row only.
+Pipeline role: prices -> Layer 1 regime -> Layer 2 entry timing.
 """
 
 import sys
@@ -26,7 +34,7 @@ def layer1_signal(
     slope_lookback: int = 100,
 ) -> pd.DataFrame:
     """
-    Layer 1 persistent regime signal.
+    Build the persistent baseline regime signal.
 
     Returns
     -------

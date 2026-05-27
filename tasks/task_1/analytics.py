@@ -1,3 +1,15 @@
+"""
+Task 1 Analytics Helpers
+========================
+
+Shared analysis utilities for the Task 1 and Task 2 notebooks. The functions
+summarise daily returns, contribution, positions, and rolling robustness plots.
+
+Main inputs are strategy returns, asset returns, weights, positions, and asset
+metadata. Main outputs are pandas Series/DataFrames or matplotlib charts. These
+helpers do not generate trading signals and do not alter strategy state.
+"""
+
 import numpy as np
 import pandas as pd
 
@@ -131,7 +143,7 @@ def plot_signals(
     figsize   : (width, height) for each individual figure.
     """
     import matplotlib.pyplot as plt
-    from strategy_v2 import build_signals, run_strategy
+    from tasks.task_1.strategy import build_signals, run_strategy
 
     p = prices[commodity]
 
@@ -234,17 +246,19 @@ def rolling_sharpe(
     returns : daily portfolio returns
     window  : rolling window in days (default 252 = 1 year)
     """
+    returns = returns.dropna()
     roll    = returns.rolling(window)
     mu      = roll.mean() * 252
     sigma   = roll.std()  * np.sqrt(252)
-    return (mu / sigma).rename(f'Rolling Sharpe ({window}d)')
+    out     = (mu / sigma).replace([np.inf, -np.inf], np.nan)
+    return out.rename(f'Rolling Sharpe ({window}d)')
 
 
 def plot_rolling_sharpe(
     results: dict,
     window:  int   = 252,
     figsize: tuple = (13, 5),
-) -> None:
+) -> pd.DataFrame:
     """
     Plot rolling Sharpe for one or more strategies to visualise robustness.
 
@@ -258,11 +272,21 @@ def plot_rolling_sharpe(
     """
     import matplotlib.pyplot as plt
 
+    aligned = pd.concat(
+        {label: series.dropna() for label, series in results.items()},
+        axis=1,
+        join='inner',
+    )
+
+    rolling = pd.DataFrame({
+        label: rolling_sharpe(aligned[label], window=window)
+        for label in aligned.columns
+    }).dropna(how='all')
+
     fig, ax = plt.subplots(figsize=figsize)
 
-    for label, port_r in results.items():
-        rs = rolling_sharpe(port_r.dropna(), window=window)
-        ax.plot(rs.index, rs.values, lw=1.5, label=label)
+    for label in rolling.columns:
+        ax.plot(rolling.index, rolling[label].values, lw=1.5, label=label)
 
     ax.axhline(0, color='black',  lw=0.8, linestyle='--')
     ax.axhline(1, color='grey',   lw=0.6, linestyle=':')
@@ -275,6 +299,8 @@ def plot_rolling_sharpe(
     ax.spines[['top', 'right']].set_visible(False)
     fig.tight_layout()
     plt.show()
+
+    return rolling
 
 
 def compare_strategies(

@@ -1,31 +1,22 @@
 """
-Layer 2 — Entry Timing (Enhanced)
-===================================
+Task 1 Layer 2 — Entry Timing
+=============================
 
-Identical to signal_layer2_v2 with one additional filter on the short leg:
+This module turns the Layer 1 regime grid into momentary entry events. It
+consumes close prices and Layer 1 signals, then returns a DataFrame with values
+in {-1, 0, +1, NaN}.
 
-Short RSI cap
--------------
-  Short entries are blocked when RSI < rsi_short_cap (default 40).
-  Rationale: if RSI is already below 40 the asset is oversold — shorting into
-  an already-depressed reading increases the risk of a sharp mean-reversion.
-  This is a pure level condition (not a crossover), applied on top of the
-  existing RSI flag filter.
+Long  (+1): Layer 1 is long, price crosses above EMA, and RSI recently crossed
+above the long threshold.
+Short (-1): Layer 1 is short, price crosses below EMA, and RSI recently crossed
+below the short threshold.
 
-  short_ok = layer1==-1  AND  EMA cross down  AND  RSI flag active
-             AND  RSI >= rsi_short_cap
+RSI flags remain active for rsi_flag_window bars after the break. This filters
+out EMA crosses that lack momentum confirmation.
 
-Full short condition (all must hold at signal bar t):
-  · Layer 1 regime == -1
-  · Price crosses below EMA
-  · RSI flag: RSI crossed below rsi_level within the last rsi_flag_window bars
-  · RSI >= rsi_short_cap  ← enhancement
-
-Long condition unchanged from signal_layer2_v2.
-
-Look-ahead convention
----------------------
-Signal generated at close of t. Execution at close of t+1 (backtester shifts).
+No-lookahead: the signal is generated at close t using data through t. The slot
+manager shifts entries so execution occurs on t+1.
+Pipeline role: Layer 1 regime -> Layer 2 entry events -> slot manager.
 """
 
 import sys
@@ -42,12 +33,11 @@ def layer2_signal(
     ema_window:       int   = 14,
     rsi_window:       int   = 14,
     rsi_long_level:   float = 50.0,   # RSI must cross ABOVE this to confirm long
-    rsi_level:        float = 60.0,   # RSI must cross BELOW this to confirm short
-    rsi_flag_window:  int   = 5,
-    rsi_short_cap:    float = 40.0,   # short blocked if RSI < this (oversold cap)
+    rsi_level:        float = 50.0,   # RSI must cross BELOW this to confirm short
+    rsi_flag_window:  int   = 10,
 ) -> pd.DataFrame:
     """
-    Layer 2 entry timing signal — enhanced short filter.
+    Build the baseline entry-timing signal.
 
     Parameters
     ----------
@@ -55,10 +45,9 @@ def layer2_signal(
     layer1          : output of layer1_signal — values in {-1, 0, +1, NaN}
     ema_window      : EMA period for price crossover
     rsi_window      : RSI lookback period
-    rsi_long_level  : RSI must cross above this to confirm long entry
+    rsi_long_level  : RSI must cross above this to confirm long entry (filters weak bounces)
     rsi_level       : RSI must cross below this to confirm short entry
     rsi_flag_window : how many days the RSI flag stays active after the break
-    rsi_short_cap   : short entries blocked when RSI < this level (default 40.0)
 
     Returns
     -------
@@ -85,9 +74,7 @@ def layer2_signal(
     rsi_flag_short  = rsi_break_short.rolling(rsi_flag_window, min_periods=1).max()
 
     long_ok  = (layer1 == 1)  & cross_up   & (rsi_flag_long  == 1)
-
-    # Enhancement: additionally require RSI >= rsi_short_cap to avoid shorting oversold assets
-    short_ok = (layer1 == -1) & cross_down & (rsi_flag_short == 1) & (rsi_vals >= rsi_short_cap)
+    short_ok = (layer1 == -1) & cross_down & (rsi_flag_short == 1)
 
     signal = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
     signal[long_ok]  =  1.0

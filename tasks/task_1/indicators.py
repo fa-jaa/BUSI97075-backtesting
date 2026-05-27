@@ -1,10 +1,14 @@
 """
-Pure indicator functions — no state, no side effects.
+Indicator Helpers
+=================
 
-Each function takes a prices DataFrame (dates × assets) and returns a
-DataFrame of the same shape. All calculations use only data up to and
-including the current row (no look-ahead), except expanding_quantile
-which explicitly shifts by 1 day.
+Pure indicator functions shared by Task 1 and Task 2. Each function takes a
+prices DataFrame indexed by date with one column per asset and returns a
+DataFrame or tuple of DataFrames aligned to the input.
+
+All calculations use only data up to and including the current row. The one
+exception is expanding_quantile(), which intentionally shifts by one day so the
+threshold at t only uses history through t-1.
 """
 
 import numpy as np
@@ -19,6 +23,7 @@ def sma(prices: pd.DataFrame, window: int) -> pd.DataFrame:
 def ema(prices: pd.DataFrame, span: int) -> pd.DataFrame:
     """Exponential moving average with span-day half-life."""
     return prices.ewm(span=span, min_periods=span, adjust=False).mean()
+
 
 def atr_pct(prices: pd.DataFrame, window: int = 30) -> pd.DataFrame:
     """

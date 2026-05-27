@@ -1,35 +1,51 @@
 """
-Strategy v2 — Trend-Following Pipeline (Baseline)
+Task 1 Strategy — Baseline Trend-Following Pipeline
 ===================================================
+
+This module orchestrates the Task 1 baseline strategy. It accepts close-price
+data, builds the two signal layers, converts signals into one open position per
+commodity, and then sizes those positions into portfolio weights and returns.
+
+Strategy overview
+-----------------
+Layer 1 is the persistent trend filter:
+  Long  : SMA50 > SMA200 and SMA200 slope over 100 days is positive.
+  Short : SMA50 < SMA200 and SMA200 slope over 100 days is negative.
+
+Layer 2 is the entry-timing layer:
+  Long  : Layer 1 is long, price crosses above EMA14, and RSI confirms strength.
+  Short : Layer 1 is short, price crosses below EMA14, and RSI breaks below the
+          short threshold inside the active flag window.
+
+The slot manager opens at most one position per commodity. It exits on the
+first of fixed ATR stop, Bollinger Band profit exit, or Layer 1 regime end. The
+portfolio manager sizes each open position from ATR stop distance, caps each
+weight, and enforces the gross leverage cap.
+
+Main inputs
+-----------
+prices : daily close prices, indexed by date and with one column per commodity.
+returns : optional daily returns aligned to prices; computed from prices if None.
+
+Main outputs
+------------
+build_signals() returns Layer 1 regime and Layer 2 entry grids.
+run_strategy() returns positions, weights, and daily portfolio returns.
+
+No-lookahead convention
+-----------------------
+Layer 2 records signals at the close of t. The slot manager shifts entries by
+one bar, and the portfolio manager shifts weights by exec_lag before P&L.
 
 Pipeline
 --------
-prices
-  │
-  ▼
-layer1_signal        Regime filter — SMA crossover + single slope lookback
-  │                  Long  : SMA50 > SMA200  AND  SMA200 slope > 0 (100d)
-  │                  Short : SMA50 < SMA200  AND  SMA200 slope < 0 (100d)
-  ▼
-layer2_signal        Entry timing (momentary events)
-  │                  Long  : layer1 == +1  AND  price crosses above EMA14
-  │                  Short : layer1 == -1  AND  price crosses below EMA14
-  │                           AND  RSI flag breaks below 50
-  ▼
-build_positions      Per-commodity position builder (slot_manager)
-  │                  One position per commodity, no clustering.
-  │                  Exit: SL (ATR-based)  OR  BB(100, 2σ)  OR  regime ends
-  ▼
-build_portfolio      Risk budget and weights (portfolio_manager)
-  │                  ATR-based bottom-up sizing, gross leverage cap.
-  ▼
-portfolio_returns    Daily portfolio returns
+prices -> Layer 1 regime -> Layer 2 entries -> positions -> weights -> returns
 """
 
 import pandas as pd
 
-from signals.signal_layer1_v2      import layer1_signal
-from signals.signal_layer2_v2      import layer2_signal
+from tasks.task_1.signals.signal_layer1      import layer1_signal
+from tasks.task_1.signals.signal_layer2      import layer2_signal
 from portfolio.slot_manager         import build_positions
 from portfolio.portfolio_manager    import build_portfolio
 
@@ -48,11 +64,14 @@ def build_signals(
     rsi_flag_window: int   = 5,
 ) -> dict[str, pd.DataFrame]:
     """
-    Run Layer 1 (regime) and Layer 2 (entry timing).
+    Run the Task 1 signal stack.
+
+    Layer 1 produces the persistent trend regime. Layer 2 produces momentary
+    entry events inside that regime. Execution shifting happens downstream.
 
     Returns
     -------
-    dict with keys 'layer1' and 'layer2'
+    dict with keys 'layer1' and 'layer2'.
     """
     l1 = layer1_signal(
         prices,
@@ -99,7 +118,7 @@ def run_strategy(
     exec_lag:        int   = 1,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """
-    Full pipeline: signals → positions → weights → portfolio returns.
+    Run the full baseline pipeline: signals -> positions -> weights -> returns.
 
     Returns
     -------

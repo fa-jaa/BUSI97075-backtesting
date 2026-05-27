@@ -1,29 +1,21 @@
 """
-Portfolio Manager — Weights and Risk Budget
-============================================
+Task 1 Portfolio Manager — Weights And Returns
+==============================================
 
-Takes the positions DataFrame from slot_manager {-1, 0, +1} and computes
-position weights using ATR-based bottom-up sizing, applies a gross leverage
-cap, and returns daily portfolio returns.
+This module converts the Task 1 positions grid into ATR-sized portfolio weights
+and daily portfolio returns. It receives positions, prices, and asset returns;
+it returns executed weights and the aggregate daily return series.
 
 Sizing
 ------
-  stop_distance_pct = sl_mult × ATR_pct[t_entry]   (matches slot_manager SL)
-  weight            = min(risk_per_trade / stop_distance_pct, max_weight) × direction
+stop_distance_pct = sl_mult * ATR_pct[t_entry]
+weight = min(risk_per_trade / stop_distance_pct, max_weight) * direction
 
-  Weights are locked at entry and do not change until the position closes.
-  Capped at max_weight (default 20%) regardless of ATR.
+Weights are locked at entry and stay fixed until the position closes. New
+positions are skipped when current gross leverage is already at the cap.
 
-Leverage cap
-------------
-  gross_leverage = Σ |weight| across all active positions.
-  If gross_leverage ≥ leverage_cap when a new position opens → skip it.
-  Existing positions are never force-closed by the cap.
-
-Execution lag
--------------
-  Weights are shifted by exec_lag (default 1) before being applied to returns,
-  so the first bar of P&L is exec_lag bars after position entry.
+No-lookahead: weights are shifted by exec_lag before being applied to returns.
+Pipeline role: positions -> weights -> portfolio returns.
 """
 
 import sys

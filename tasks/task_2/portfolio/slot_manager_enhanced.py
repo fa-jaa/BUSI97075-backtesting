@@ -1,14 +1,23 @@
 """
-Slot Manager — Enhanced (Parabolic SAR Trailing Stop)
-=====================================================
+Task 2 Slot Manager — SAR Positions And Short RSI Execution Cap
+===============================================================
 
-Identical to slot_manager with one enhancement: the fixed ATR stop loss is
-replaced by a Parabolic SAR trailing stop.
+This module converts enhanced Layer 1 and Layer 2 signals into one open position
+per commodity. It receives prices and signal grids, then returns a positions
+DataFrame with values in {-1, 0, +1}. Sizing and transaction costs are handled
+later by portfolio_manager_enhanced.
+
+Enhancements over the Task 1 slot manager:
+
+- The fixed ATR stop is replaced by a Parabolic SAR trailing stop.
+- Short entries are blocked when execution-bar RSI is below rsi_short_cap.
 
 Stop Loss — Parabolic SAR (trailing)
 -------------------------------------
   The SAR is initialised at entry using sar_initial_mult × ATR_pct from the
   entry price, then trails the price as the trade moves in our favour.
+  sar_initial_mult only controls this initial placement distance; it is not
+  the Parabolic SAR acceleration factor.
 
   Each bar:
     SAR = SAR + AF × (EP - SAR)
@@ -23,9 +32,11 @@ Stop Loss — Parabolic SAR (trailing)
   Long exit:  price < SAR
   Short exit: price > SAR
 
-BB exit and regime exit are unchanged from the base slot_manager.
+BB exit and regime exit are unchanged from the Task 1 slot manager.
 
-Entry, no-clustering, and execution lag logic are identical to slot_manager.
+No-lookahead: Layer 2 signals are shifted by one bar before entry, and the RSI
+cap is checked on the actual execution bar. Pipeline role: enhanced Layer 2
+events -> SAR-managed positions -> enhanced portfolio manager.
 """
 
 import sys
@@ -34,7 +45,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
 import pandas as pd
-from indicators import atr_pct as _atr_pct_fn, bollinger_bands
+from indicators import atr_pct as _atr_pct_fn, bollinger_bands, rsi as _rsi_fn
 
 
 def build_positions(
@@ -44,11 +55,13 @@ def build_positions(
     bb_window:        int   = 100,
     bb_num_std:       float = 2.0,
     atr_window:       int   = 50,
-    sar_initial_mult: float = 3.0,    # initial SAR distance = sar_initial_mult × ATR_pct
+    sar_initial_mult: float = 3.0,    # initial SAR placement distance in ATR_pct units
     sar_af_start:     float = 0.02,
     sar_af_step:      float = 0.02,
     sar_af_max:       float = 0.20,
     sar_grace_period: int   = 10,     # bars before AF is allowed to accelerate
+    rsi_window:       int   = 14,
+    rsi_short_cap:    float = 50.0,   # skip short entry if RSI < this at execution bar
 ) -> pd.DataFrame:
     """
     Build one position per commodity using Parabolic SAR as trailing stop.
@@ -61,20 +74,24 @@ def build_positions(
     bb_window        : Bollinger Band lookback (default 100)
     bb_num_std       : Bollinger Band width in std deviations (default 2.0)
     atr_window       : ATR lookback (default 50)
-    sar_initial_mult : ATR multiplier for initial SAR distance (default 3.0)
-    sar_af_start     : initial acceleration factor (default 0.02)
+    sar_initial_mult : initial SAR placement distance in ATR_pct units (default 3.0)
+                       Distinct from the Parabolic SAR acceleration factors.
+    sar_af_start     : initial Parabolic SAR acceleration factor (default 0.02)
     sar_af_step      : AF increment per new extreme price (default 0.02)
     sar_af_max       : maximum acceleration factor (default 0.20)
     sar_grace_period : bars before AF is allowed to increase (default 10)
+    rsi_window       : RSI lookback for the short oversold cap (default 14)
+    rsi_short_cap    : skip short entry if execution-bar RSI < this value (default 50.0)
 
     Returns
     -------
     positions : DataFrame {-1, 0, +1} — open direction per commodity
     """
     _, upper_bb, lower_bb = bollinger_bands(prices, bb_window, bb_num_std)
-    atr_df = _atr_pct_fn(prices, atr_window)
+    atr_df  = _atr_pct_fn(prices, atr_window)
+    rsi_df  = _rsi_fn(prices, rsi_window)
 
-    # No look-ahead: signal at t → entry executes at t+1
+    # No look-ahead: signal at t -> entry executes at t+1.
     entry_exec = layer2.shift(1)
 
     cols = list(prices.columns)
@@ -86,6 +103,7 @@ def build_positions(
     ub_arr    = {c: upper_bb[c].values   if c in upper_bb.columns else np.full(n, np.nan) for c in cols}
     lb_arr    = {c: lower_bb[c].values   if c in lower_bb.columns else np.full(n, np.nan) for c in cols}
     atr_arr   = {c: atr_df[c].values     if c in atr_df.columns   else np.full(n, np.nan) for c in cols}
+    rsi_arr   = {c: rsi_df[c].values     if c in rsi_df.columns   else np.full(n, 100.0)  for c in cols}
 
     pos_out = {c: np.zeros(n) for c in cols}
 
@@ -158,6 +176,12 @@ def build_positions(
                 continue
 
             direction = int(entry_t)
+
+            # Oversold guard: skip short if RSI at execution bar is below the cap
+            if direction == -1 and rsi_short_cap > 0:
+                rsi_t = rsi_arr[col][t]
+                if not np.isnan(rsi_t) and rsi_t < rsi_short_cap:
+                    continue
             sar_init  = price_t * (1.0 - direction * sar_initial_mult * atr_t)
 
             active[col] = {
