@@ -1,15 +1,33 @@
 """
-Portfolio Manager — Enhanced (Weights and Risk Budget)
-=======================================================
+Portfolio Manager — Enhanced (Conviction-Weighted Sizing)
+==========================================================
 
-Identical to portfolio_manager. Reserved for future enhancements.
+Enhancement over portfolio_manager (base):
 
-Current logic (unchanged):
+  Conviction-weighted risk budgeting
+  -----------------------------------
+  The base portfolio manager always risks a fixed fraction (risk_per_trade)
+  regardless of how strong the regime signal is.
+
+  Here, the risk per trade is scaled by the regime conviction at entry:
+
+    effective_risk = risk_per_trade × |regime_strength[t]|
+
+  where regime_strength ∈ [-1, +1] is the continuous multi-lookback signal
+  from signal_layer1_v2_enhanced. This means:
+
+    |strength| = 1.0  → full 1% risk  (all 10 lookbacks agree)
+    |strength| = 0.6  → 0.6% risk     (moderate conviction)
+    |strength| = 0.2  → 0.2% risk     (weak conviction)
+
+  Everything else (stop distance, max_weight cap, leverage cap, exec_lag)
+  is unchanged from the base.
+
+Sizing formula
+--------------
   stop_distance_pct = sl_mult × ATR_pct[t_entry]
-  weight            = min(risk_per_trade / stop_distance_pct, max_weight) × direction
-
-  Weights are locked at entry and do not change until the position closes.
-  Capped at max_weight (default 20%) regardless of ATR.
+  effective_risk    = risk_per_trade × |regime_strength[t_entry]|
+  weight            = min(effective_risk / stop_distance_pct, max_weight) × direction
 
 Leverage cap
 ------------
@@ -19,8 +37,7 @@ Leverage cap
 
 Execution lag
 -------------
-  Weights are shifted by exec_lag (default 1) before being applied to returns,
-  so the first bar of P&L is exec_lag bars after position entry.
+  Weights are shifted by exec_lag (default 1) before being applied to returns.
 """
 
 import sys
@@ -33,30 +50,33 @@ from indicators import atr_pct as _atr_pct_fn
 
 
 def build_portfolio(
-    positions:      pd.DataFrame,
-    prices:         pd.DataFrame,
-    returns:        pd.DataFrame,
-    atr_window:     int   = 50,
-    sl_mult:        float = 3.0,
-    risk_per_trade: float = 0.01,
-    max_weight:     float = 0.20,
-    leverage_cap:   float = 2.50,
-    exec_lag:       int   = 1,
+    positions:       pd.DataFrame,
+    prices:          pd.DataFrame,
+    returns:         pd.DataFrame,
+    regime_strength: pd.DataFrame = None,   # continuous [-1, +1] conviction signal
+    atr_window:      int   = 50,
+    sl_mult:         float = 3.0,
+    risk_per_trade:  float = 0.01,
+    max_weight:      float = 0.20,
+    leverage_cap:    float = 2.50,
+    exec_lag:        int   = 1,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """
-    Compute weights and portfolio returns from a positions DataFrame.
+    Compute conviction-weighted weights and portfolio returns.
 
     Parameters
     ----------
-    positions      : {-1, 0, +1} per commodity (output of slot_manager.build_positions)
-    prices         : close prices (dates × assets)
-    returns        : daily returns (dates × assets)
-    atr_window     : ATR lookback (default 50)
-    sl_mult        : ATR multiplier for stop distance (default 3.0)
-    risk_per_trade : capital fraction risked per trade (default 0.01 = 1%)
-    max_weight     : hard cap on individual position weight (default 0.20 = 20%)
-    leverage_cap   : gross leverage cap; new positions blocked above this (default 2.50)
-    exec_lag       : weight shift before P&L calculation (default 1)
+    positions       : {-1, 0, +1} per commodity (output of slot_manager)
+    prices          : close prices (dates × assets)
+    returns         : daily returns (dates × assets)
+    regime_strength : continuous regime signal [-1, +1] from signal_layer1_v2_enhanced.
+                      If None, falls back to fixed risk_per_trade (base behaviour).
+    atr_window      : ATR lookback (default 50)
+    sl_mult         : ATR multiplier for stop distance (default 3.0)
+    risk_per_trade  : maximum capital fraction risked per trade (default 0.01 = 1%)
+    max_weight      : hard cap on individual position weight (default 0.20 = 20%)
+    leverage_cap    : gross leverage cap; new positions blocked above this (default 2.50)
+    exec_lag        : weight shift before P&L calculation (default 1)
 
     Returns
     -------
@@ -70,6 +90,14 @@ def build_portfolio(
 
     pos_arr = {c: positions[c].values for c in cols}
     atr_arr = {c: atr_df[c].values if c in atr_df.columns else np.full(n, np.nan) for c in cols}
+
+    # Pre-extract regime strength arrays (None if not provided)
+    str_arr = {}
+    for c in cols:
+        if regime_strength is not None and c in regime_strength.columns:
+            str_arr[c] = regime_strength[c].values
+        else:
+            str_arr[c] = None
 
     wgt_out       = {c: np.zeros(n) for c in cols}
     locked_weight = {c: 0.0 for c in cols}
@@ -90,8 +118,16 @@ def build_portfolio(
                 if np.isnan(atr_t) or atr_t < 1e-6 or current_gross >= leverage_cap:
                     locked_weight[col] = 0.0
                 else:
-                    stop_dist = sl_mult * atr_t
-                    size      = min(risk_per_trade / stop_dist, max_weight)
+                    # Scale risk by regime conviction at entry
+                    conviction = 1.0
+                    if str_arr[col] is not None:
+                        s = str_arr[col][t]
+                        if not np.isnan(s):
+                            conviction = abs(s)
+
+                    stop_dist      = sl_mult * atr_t
+                    effective_risk = risk_per_trade * conviction
+                    size           = min(effective_risk / stop_dist, max_weight)
                     locked_weight[col] = pos_t * size
                     current_gross     += abs(locked_weight[col])
 

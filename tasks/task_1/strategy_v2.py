@@ -1,24 +1,24 @@
 """
-Strategy v2 — Trend-Following Pipeline
-=======================================
+Strategy v2 — Trend-Following Pipeline (Baseline)
+===================================================
 
 Pipeline
 --------
 prices
   │
   ▼
-layer1_signal        Regime filter (persistent)
-  │                  Long  : SMA50 > SMA200  AND  slope SMA200 > 0 (10d)
-  │                  Short : SMA50 < SMA200  AND  slope SMA200 < 0 (10d)
+layer1_signal        Regime filter — SMA crossover + single slope lookback
+  │                  Long  : SMA50 > SMA200  AND  SMA200 slope > 0 (100d)
+  │                  Short : SMA50 < SMA200  AND  SMA200 slope < 0 (100d)
   ▼
 layer2_signal        Entry timing (momentary events)
-  │                  Long  : layer1 == +1  AND  price crosses above EMA20
-  │                  Short : layer1 == -1  AND  price crosses below EMA20
+  │                  Long  : layer1 == +1  AND  price crosses above EMA14
+  │                  Short : layer1 == -1  AND  price crosses below EMA14
   │                           AND  RSI flag breaks below 50
   ▼
 build_positions      Per-commodity position builder (slot_manager)
   │                  One position per commodity, no clustering.
-  │                  Exit: SAR  OR  BB(100, 2σ)  OR  regime ends
+  │                  Exit: SL (ATR-based)  OR  BB(100, 2σ)  OR  regime ends
   ▼
 build_portfolio      Risk budget and weights (portfolio_manager)
   │                  ATR-based bottom-up sizing, gross leverage cap.
@@ -39,7 +39,7 @@ def build_signals(
     # Layer 1
     filter_fast:    int   = 50,
     filter_slow:    int   = 200,
-    slope_lookback: int   = 10,
+    slope_lookback: int   = 100,
     # Layer 2
     ema_window:      int   = 14,
     rsi_window:      int   = 14,
@@ -80,7 +80,7 @@ def run_strategy(
     # Layer 1
     filter_fast:    int   = 50,
     filter_slow:    int   = 200,
-    slope_lookback: int   = 10,
+    slope_lookback: int   = 100,
     # Layer 2
     ema_window:      int   = 14,
     rsi_window:      int   = 14,
@@ -91,7 +91,7 @@ def run_strategy(
     bb_window:  int   = 100,
     bb_num_std: float = 2.0,
     atr_window: int   = 50,
-    sl_mult:    float = 3.0,    # Stop Loss = entry_price × (1 ± sl_mult × ATR_pct)
+    sl_mult:    float = 3.0,
     # Portfolio manager — sizing and risk
     risk_per_trade:  float = 0.01,
     max_weight:      float = 0.20,

@@ -5,8 +5,8 @@ Both conditions must agree for a signal to be active.
 The signal is persistent: it stays +1/-1 every day the conditions hold,
 not just on the day of a crossover.
 
-Long  (+1): SMA50 > SMA200  AND  slope of SMA200 > 0 (over 10 days)
-Short (-1): SMA50 < SMA200  AND  slope of SMA200 < 0 (over 10 days)
+Long  (+1): SMA50 > SMA200  AND  slope of SMA200 > 0 (over 100 days)
+Short (-1): SMA50 < SMA200  AND  slope of SMA200 < 0 (over 100 days)
 Neutral(0): conditions disagree
 NaN       : insufficient history for any indicator
 """
